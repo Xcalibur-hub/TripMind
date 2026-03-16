@@ -1,5 +1,6 @@
 import os
 import time
+import textwrap
 import requests
 from io import BytesIO
 from fpdf import FPDF
@@ -97,32 +98,48 @@ class TripMindEngine:
         return self.llm.invoke(prompt).content
 
     def generate_pdf(self, itinerary: Itinerary, destination: str, weather: Optional[dict], rate: float, currency: str):
-        """PDF Generation Logic (Commit 9)"""
+        """Bulletproof PDF Generation (Bypasses multi_cell crashes)"""
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 20)
-        pdf.cell(200, 10, f"TripMind Itinerary: {destination}", ln=True, align='C')
+        pdf.set_auto_page_break(auto=True, margin=15)
+        
+        # Aggressive text cleaner: Strips ALL non-standard characters to protect the PDF engine
+        def safe_text(text):
+            return "".join(i for i in str(text) if ord(i) < 128)
+
+        pdf.set_font("Arial", 'B', 18)
+        pdf.cell(0, 10, safe_text(f"TripMind Itinerary: {destination}"), ln=True, align='C')
         
         pdf.set_font("Arial", size=12)
         if weather:
-            pdf.cell(200, 10, f"Weather: {weather['temp']}C, {weather['desc']}", ln=True)
+            pdf.cell(0, 10, safe_text(f"Weather: {weather['temp']}C, {weather['desc']}"), ln=True)
         
         for day in itinerary.days:
             pdf.ln(5)
             pdf.set_font("Arial", 'B', 14)
-            pdf.cell(200, 10, f"Day {day.day_number}", ln=True)
-            pdf.set_font("Arial", size=12)
+            pdf.cell(0, 10, safe_text(f"Day {day.day_number}"), ln=True)
+            
             for act in day.activities:
+                pdf.set_font("Arial", 'B', 12)
                 price = round(act.estimated_cost_usd * rate, 1)
-                pdf.multi_cell(0, 8, f"- {act.name} ({act.type}): ~{price} {currency}")
+                header_text = safe_text(f"- {act.name} ({act.type}): ~{price} {currency}")
+                
+                # Manually wrap header text (max 80 characters per line)
+                for line in textwrap.wrap(header_text, width=80):
+                    pdf.cell(0, 6, line, ln=True)
+
                 pdf.set_font("Arial", 'I', 10)
-                pdf.multi_cell(0, 5, f"  {act.description}")
-                pdf.set_font("Arial", size=12)
-                pdf.ln(2)
+                desc_text = safe_text(f"  {act.description}")
+                
+                # Manually wrap description text (max 90 characters per line)
+                for line in textwrap.wrap(desc_text, width=90):
+                    pdf.cell(0, 5, line, ln=True)
+                
+                pdf.ln(3) # Small gap between activities
 
         pdf.ln(10)
         pdf.set_font("Arial", 'B', 14)
         total = round(itinerary.total_estimated_budget * rate, 1)
-        pdf.cell(200, 10, f"Total Estimated Budget: {total} {currency}", ln=True)
+        pdf.cell(0, 10, safe_text(f"Total Estimated Budget: {total} {currency}"), ln=True)
         
-        return pdf.output(dest='S')
+        return bytes(pdf.output())
