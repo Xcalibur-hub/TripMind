@@ -1,6 +1,8 @@
 import os
 import time
+import requests
 from typing import List
+from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
 from langchain_groq import ChatGroq
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -26,67 +28,51 @@ class Itinerary(BaseModel):
 # --- The Multi-Agent Engine ---
 class TripMindEngine:
     def __init__(self):
-        # Using Groq with Llama 3.3 70B for blazing fast multi-agent execution
         self.llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
-        # Using DuckDuckGo as our free external verification API
         self.search = DuckDuckGoSearchRun()
 
+    def get_exchange_rate(self, target_currency="INR"):
+        """Fetch live exchange rates from USD to Target (Commit 3)"""
+        try:
+            api_key = os.getenv("EXCHANGE_API_KEY")
+            url = f"https://v6.exchangerate-api.com/v6/{api_key}/latest/USD"
+            response = requests.get(url).json()
+            if response.get("result") == "success":
+                return response['conversion_rates'].get(target_currency, 1.0)
+            return 1.0
+        except Exception as e:
+            print(f"Currency Error: {e}")
+            return 1.0
+
     def generate_draft_itinerary(self, destination: str, duration: int, budget: str, interests: str) -> Itinerary:
-        """Agent 1: The Planner with Robust Parsing"""
+        """Agent 1: The Planner"""
         structured_llm = self.llm.with_structured_output(Itinerary)
-        
         prompt = (
             f"Generate a {duration}-day itinerary for {destination}. "
             f"Budget: {budget}. Interests: {interests}. "
             "Return ONLY valid JSON. Ensure 'estimated_cost_usd' is an integer."
         )
-        
         try:
             return structured_llm.invoke(prompt)
-        except Exception as e:
-            print(f"⚠️ Initial JSON parse failed: {e}. Triggering fallback...")
-            
-            fallback_prompt = prompt + " CRITICAL: Please fix the JSON formatting. Output absolutely nothing but valid JSON."
-            return structured_llm.invoke(fallback_prompt)
+        except Exception:
+            return structured_llm.invoke(prompt + " Please fix the JSON formatting.")
+
+    def _verify_single_activity(self, activity, destination):
+        """Helper for concurrency"""
+        query = f"{activity.name} {activity.type} in {destination} reviews open"
+        try:
+            search_result = self.search.invoke(query)
+            eval_prompt = f"Is '{activity.name}' in {destination} a real, open business based on: {search_result[:300]}? Answer YES or NO."
+            response = self.llm.invoke(eval_prompt)
+            is_real = str(response.content).strip().upper()
+            status = "✅ Verified Real" if "YES" in is_real else "⚠️ Flagged: Might be closed/fake"
+            return {"name": activity.name, "status": status}
+        except:
+            return {"name": activity.name, "status": "❓ Verification Failed"}
 
     def verify_places(self, itinerary: Itinerary, destination: str):
-        """Agent 2: The Verifier. Hits the web to check if places actually exist."""
-        verification_log = []
-        
-        for day in itinerary.days:
-            for activity in day.activities:
-                query = f"{activity.name} {activity.type} in {destination} reviews open"
-                try:
-                    # External API Call to verify ground truth
-                    search_result = self.search.invoke(query)
-                    
-                    # Agentic evaluation of the search result
-                    eval_prompt = (
-                        f"Based on this web search snippet: '{search_result[:300]}', "
-                        f"does the place '{activity.name}' seem to be a real, open business/location? "
-                        f"Answer only 'YES' or 'NO'."
-                    )
-                    
-                    response = self.llm.invoke(eval_prompt)
-                    raw_content = response.content
-                    
-                    # Safely extract text whether LangChain returns a list or a string
-                    if isinstance(raw_content, list):
-                        text_content = raw_content[0].get("text", "") if isinstance(raw_content[0], dict) else str(raw_content[0])
-                    else:
-                        text_content = str(raw_content)
-                        
-                    is_real = text_content.strip().upper()
-                    
-                    status = "✅ Verified Real" if "YES" in is_real else "⚠️ Flagged: Might be closed/fake"
-                    verification_log.append({"name": activity.name, "status": status})
-                    
-                    # Just 1 second to keep DuckDuckGo happy; Groq handles the rest instantly!
-                    time.sleep(1) 
-                    
-                except Exception as e:
-                    print(f"💥 ERROR verifying {activity.name}: {e}")
-                    verification_log.append({"name": activity.name, "status": "❓ Verification Failed"})
-                    time.sleep(1)
-                    
-        return verification_log
+        """Agent 2: The Verifier (Concurrent)"""
+        all_activities = [act for day in itinerary.days for act in day.activities]
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(lambda act: self._verify_single_activity(act, destination), all_activities))
+        return results
