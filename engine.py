@@ -1,6 +1,8 @@
 import os
 import time
 import requests
+from io import BytesIO
+from fpdf import FPDF
 from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
@@ -87,15 +89,40 @@ class TripMindEngine:
         return self.llm.invoke(messages).content
 
     def generate_packing_list(self, destination: str, duration: int, weather: Optional[dict], itinerary: Itinerary):
-        """Packing List Agent (Commit 8)"""
         weather_str = f"{weather['temp']}°C, {weather['desc']}" if weather else "Unknown"
         activity_types = list(set([act.type for day in itinerary.days for act in day.activities]))
+        prompt = (f"Generate packing list for {duration}-day trip to {destination}. Weather: {weather_str}. "
+                  f"Activities: {', '.join(activity_types)}. Categories: Clothing, Tech, Documents, Toiletries. "
+                  "Format: CategoryName: item1, item2")
+        return self.llm.invoke(prompt).content
+
+    def generate_pdf(self, itinerary: Itinerary, destination: str, weather: Optional[dict], rate: float, currency: str):
+        """PDF Generation Logic (Commit 9)"""
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 20)
+        pdf.cell(200, 10, f"TripMind Itinerary: {destination}", ln=True, align='C')
         
-        prompt = (
-            f"Generate a categorized packing list for a {duration}-day trip to {destination}. "
-            f"Weather: {weather_str}. Activities: {', '.join(activity_types)}. "
-            "Categories: Clothing, Tech, Documents, Toiletries. Max 5 items per category. "
-            "Format: CategoryName: item1, item2, item3"
-        )
-        response = self.llm.invoke(prompt).content
-        return response
+        pdf.set_font("Arial", size=12)
+        if weather:
+            pdf.cell(200, 10, f"Weather: {weather['temp']}C, {weather['desc']}", ln=True)
+        
+        for day in itinerary.days:
+            pdf.ln(5)
+            pdf.set_font("Arial", 'B', 14)
+            pdf.cell(200, 10, f"Day {day.day_number}", ln=True)
+            pdf.set_font("Arial", size=12)
+            for act in day.activities:
+                price = round(act.estimated_cost_usd * rate, 1)
+                pdf.multi_cell(0, 8, f"- {act.name} ({act.type}): ~{price} {currency}")
+                pdf.set_font("Arial", 'I', 10)
+                pdf.multi_cell(0, 5, f"  {act.description}")
+                pdf.set_font("Arial", size=12)
+                pdf.ln(2)
+
+        pdf.ln(10)
+        pdf.set_font("Arial", 'B', 14)
+        total = round(itinerary.total_estimated_budget * rate, 1)
+        pdf.cell(200, 10, f"Total Estimated Budget: {total} {currency}", ln=True)
+        
+        return pdf.output(dest='S')
