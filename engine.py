@@ -82,11 +82,20 @@ class TripMindEngine:
         return results
 
     def chat_with_itinerary(self, user_query: str, itinerary_context: str, chat_history: list):
-        """Conversational Agent (Commit 7)"""
-        system_msg = (
-            f"You are a helpful travel assistant. The user has the following itinerary: \n{itinerary_context}\n"
-            "Answer questions about this trip, suggest changes, or give extra tips concisely."
-        )
+        system_msg = f"You are a travel assistant. User's trip: \n{itinerary_context}\nAnswer concisely."
         messages = [{"role": "system", "content": system_msg}] + chat_history + [{"role": "user", "content": user_query}]
-        response = self.llm.invoke(messages)
-        return response.content
+        return self.llm.invoke(messages).content
+
+    def generate_packing_list(self, destination: str, duration: int, weather: Optional[dict], itinerary: Itinerary):
+        """Packing List Agent (Commit 8)"""
+        weather_str = f"{weather['temp']}°C, {weather['desc']}" if weather else "Unknown"
+        activity_types = list(set([act.type for day in itinerary.days for act in day.activities]))
+        
+        prompt = (
+            f"Generate a categorized packing list for a {duration}-day trip to {destination}. "
+            f"Weather: {weather_str}. Activities: {', '.join(activity_types)}. "
+            "Categories: Clothing, Tech, Documents, Toiletries. Max 5 items per category. "
+            "Format: CategoryName: item1, item2, item3"
+        )
+        response = self.llm.invoke(prompt).content
+        return response
