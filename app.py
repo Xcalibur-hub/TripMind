@@ -6,11 +6,12 @@ from mock_engine import MockTripMindEngine
 
 st.set_page_config(page_title="TripMind AI", page_icon="✈️", layout="wide")
 
-# Styling
+# Custom UI
 st.markdown("""
     <style>
     .stApp { background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%); color: #FAFAFA; }
     .stButton>button { background: linear-gradient(90deg, #00C9FF 0%, #92FE9D 100%); color: #000; font-weight: bold; border-radius: 30px; }
+    .chat-bubble { background: rgba(255, 255, 255, 0.05); border-radius: 15px; padding: 15px; margin: 10px 0; border: 1px solid rgba(255,255,255,0.1); }
     </style>
 """, unsafe_allow_html=True)
 
@@ -21,6 +22,11 @@ if "engine" not in st.session_state or st.session_state.get("last_mode") != dev_
     st.session_state.engine = MockTripMindEngine() if dev_mode else TripMindEngine()
     st.session_state.last_mode = dev_mode
 
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "current_itinerary" not in st.session_state:
+    st.session_state.current_itinerary = None
+
 st.title("✈️ TripMind: Multi-Agent Travel Planner")
 
 with st.sidebar:
@@ -29,22 +35,32 @@ with st.sidebar:
     duration = st.slider("Days", 1, 7, 3)
     budget = st.selectbox("Budget Level", ["Moderate", "Luxury", "Backpacker"])
     target_currency = st.selectbox("Currency", ["USD", "INR", "EUR", "GBP"])
-    generate_btn = st.button("🚀 Generate Itinerary", use_container_width=True)
+    
+    if st.button("🚀 Generate Itinerary", use_container_width=True):
+        st.session_state.chat_history = [] # Reset chat for new trip
+        st.session_state.generate = True
+    else:
+        st.session_state.generate = False
 
-if generate_btn:
+if st.session_state.get("generate") or st.session_state.current_itinerary:
     col1, col2 = st.columns([1.5, 1])
     
-    with st.spinner("🌍 Processing..."):
-        weather = st.session_state.engine.get_weather_forecast(destination)
-        draft = st.session_state.engine.generate_draft_itinerary(destination, duration, budget, "", weather)
-        rate = st.session_state.engine.get_exchange_rate(target_currency)
+    if st.session_state.generate:
+        with st.spinner("🌍 Gathering Intel..."):
+            weather = st.session_state.engine.get_weather_forecast(destination)
+            st.session_state.current_itinerary = st.session_state.engine.generate_draft_itinerary(destination, duration, budget, "", weather)
+            st.session_state.current_weather = weather
+            st.session_state.rate = st.session_state.engine.get_exchange_rate(target_currency)
+    
+    draft = st.session_state.current_itinerary
+    rate = st.session_state.rate
+    weather = st.session_state.get("current_weather")
 
     with col1:
         if weather:
-            st.info(f"🌦️ {destination} Weather: {weather['temp']}°C, {weather['desc']}. Agent has adjusted your plan.")
-
-        # --- MAP (COMMIT 5) ---
-        st.subheader("📍 Interactive Map")
+            st.info(f"🌦️ Weather: {weather['temp']}°C, {weather['desc']}. Itinerary optimized.")
+        
+        # Map Logic
         m = folium.Map(location=[20, 0], zoom_start=2)
         points = []
         for day in draft.days:
@@ -58,25 +74,36 @@ if generate_btn:
             m.fit_bounds(points)
             st_folium(m, width=700, height=350)
 
-        # --- BREAKDOWN + LINKS (COMMIT 6) ---
+        # Itinerary
         for day in draft.days:
-            st.markdown(f"#### 📅 Day {day.day_number}")
-            for act in day.activities:
-                with st.container():
+            with st.expander(f"📅 Day {day.day_number}"):
+                for act in day.activities:
                     st.write(f"**{act.name}** | ~{round(act.estimated_cost_usd * rate, 1)} {target_currency}")
-                    st.caption(act.description)
                     slug = f"{act.name} {destination}".replace(" ", "+")
-                    if act.type == "Accommodation":
-                        st.link_button("🏨 Book Now", f"https://www.booking.com/search.html?ss={slug}")
-                    elif act.type == "Food":
-                        st.link_button("🍴 Reviews", f"https://www.tripadvisor.com/Search?q={slug}")
-                    else:
-                        st.link_button("🗺️ View Maps", f"http://maps.google.com/?q={slug}")
-                    st.divider()
+                    st.link_button("🏨 View Details", f"http://maps.google.com/?q={slug}")
 
     with col2:
         st.subheader("🔍 Verification Log")
         log = st.session_state.engine.verify_places(draft, destination)
         for item in log:
             st.write(f"{item['status']} | {item['name']}")
-        st.balloons()
+
+    # --- COMMIT 7: CHAT INTERFACE ---
+    st.divider()
+    st.subheader("💬 Ask about your trip")
+    
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if user_input := st.chat_input("Ask a follow-up question..."):
+        st.session_state.chat_history.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+            
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                itinerary_str = str(draft.json())
+                response = st.session_state.engine.chat_with_itinerary(user_input, itinerary_str, st.session_state.chat_history[:-1])
+                st.markdown(response)
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
