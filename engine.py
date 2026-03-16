@@ -32,17 +32,22 @@ class TripMindEngine:
         self.search = DuckDuckGoSearchRun()
 
     def generate_draft_itinerary(self, destination: str, duration: int, budget: str, interests: str) -> Itinerary:
-        """Agent 1: The Planner"""
+        """Agent 1: The Planner with Robust Parsing"""
         structured_llm = self.llm.with_structured_output(Itinerary)
         
         prompt = (
-            f"You are an expert travel planner. Create a {duration}-day itinerary for {destination}. "
-            f"The budget is {budget}. The user is interested in: {interests}. "
-            f"Provide specific, real names for hotels, restaurants, and attractions. "
-            f"Ensure the total estimated budget is realistic. "
-            f"IMPORTANT: You must return the output strictly in valid JSON matching the requested schema."
+            f"Generate a {duration}-day itinerary for {destination}. "
+            f"Budget: {budget}. Interests: {interests}. "
+            "Return ONLY valid JSON. Ensure 'estimated_cost_usd' is an integer."
         )
-        return structured_llm.invoke(prompt)
+        
+        try:
+            return structured_llm.invoke(prompt)
+        except Exception as e:
+            print(f"⚠️ Initial JSON parse failed: {e}. Triggering fallback...")
+            
+            fallback_prompt = prompt + " CRITICAL: Please fix the JSON formatting. Output absolutely nothing but valid JSON."
+            return structured_llm.invoke(fallback_prompt)
 
     def verify_places(self, itinerary: Itinerary, destination: str):
         """Agent 2: The Verifier. Hits the web to check if places actually exist."""
